@@ -1,56 +1,50 @@
-# HiBid Scraper
+# HiBid Auction Evaluator
 
-Scrapes any HiBid auction catalog into CSV or JSON.
+Scrapes any HiBid catalog, pulls the lot image and title, then compares each lot against recent eBay sold prices — all in a single HTML report you open in your browser.
 
-## How it works
-
-Playwright loads the catalog page in a real (headless) Chromium browser and intercepts the internal API calls HiBid's frontend makes to fetch lot data. This gives clean structured JSON rather than fragile HTML parsing. If no API calls match, it falls back to DOM scraping.
+![Report shows lot image, current bid, and eBay sold comps side by side]
 
 ## Setup
 
 ```bash
-pip install playwright
+pip install playwright requests beautifulsoup4
 python -m playwright install chromium
 ```
 
 ## Usage
 
 ```bash
-# Basic — saves hibid_741805.csv
-python scraper.py "https://hibid.com/catalog/741805/5-27-portugal-leaf-pottery--guitars--outdoor-theatre--comics"
+# Full run — scrapes HiBid, fetches eBay comps, opens report in browser
+python scraper.py "https://hibid.com/catalog/741805/..."
 
-# Save as JSON
-python scraper.py "<url>" --format json
+# Skip eBay lookup (faster, still generates HTML with images)
+python scraper.py "https://hibid.com/catalog/741805/..." --no-ebay
 
-# Save both CSV and JSON
-python scraper.py "<url>" --format both
+# Visible browser window for debugging
+python scraper.py "https://hibid.com/catalog/741805/..." --headless false
 
-# Custom output file
-python scraper.py "<url>" --output my_auction.csv
+# Also save CSV and JSON alongside the HTML
+python scraper.py "https://hibid.com/catalog/741805/..." --csv --json
 
-# Debug with visible browser window
-python scraper.py "<url>" --headless false
+# Slow down eBay requests if you're hitting rate limits
+python scraper.py "https://hibid.com/catalog/741805/..." --ebay-delay 3
 ```
 
-## Output fields
+## What the report shows
 
-| Field | Description |
-|---|---|
-| `catalog_id` | HiBid catalog ID from the URL |
-| `lot_id` | Internal lot identifier |
-| `lot_number` | Display lot number |
-| `title` | Lot title / item name |
-| `current_bid` | Current high bid |
-| `start_price` | Opening / starting bid |
-| `estimate` | Auction house estimate |
-| `bid_count` | Number of bids placed |
-| `end_time` | Lot closing time |
-| `url` | Direct link to the lot |
-| `image_url` | Primary image URL |
-| `status` | Lot status (open, closed, etc.) |
+Each lot card displays:
+- **Main image** from HiBid
+- **Lot number and title**
+- **Current bid** on HiBid
+- **eBay sold comps** — last 6 matching sales with prices and links
+- **Value verdict** — colour-coded badge:
+  - 🟢 **Great deal** — bid is under 50% of eBay average
+  - 🟡 **Good deal** — bid is 50–80% of eBay average
+  - 🔴 **Fair / Overbid** — bid is at or above eBay average
+  - ⬜ **No eBay data** — nothing found to compare
 
 ## Notes
 
-- Run on your **local machine** — HiBid blocks requests from cloud/datacenter IPs
-- If you get no results, try `--headless false` to watch the browser and diagnose what's happening
-- HiBid occasionally changes their internal API structure; the field aliases in `scraper.py` cover common variations
+- Must run on your **local machine** — HiBid blocks cloud/datacenter IPs
+- eBay lookup takes ~1.5 seconds per lot; a 100-lot auction takes ~2.5 minutes
+- If eBay comps look wrong, the title may be too specific or too generic — check the "View all on eBay" link in the card
