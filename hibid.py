@@ -1,12 +1,12 @@
 """HiBid catalog scraper — loads page in Chromium and intercepts API responses."""
 
+import asyncio
 import re
 import sys
-import time
 from urllib.parse import urlparse
 
 try:
-    from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+    from playwright.async_api import async_playwright, TimeoutError as PWTimeout
 except ImportError:
     sys.exit("Run: pip install playwright && python -m playwright install chromium")
 
@@ -72,7 +72,6 @@ def _normalise(raw: dict, catalog_id: str) -> dict:
         for alias in aliases:
             if alias in raw:
                 val = raw[alias]
-                # images field sometimes comes back as a list
                 if field == "image_url" and isinstance(val, list):
                     val = val[0] if val else None
                     if isinstance(val, dict):
@@ -92,25 +91,26 @@ def _normalise(raw: dict, catalog_id: str) -> dict:
 
 # ── DOM fallback ──────────────────────────────────────────────────────────────
 
-def _dom_fallback(page, catalog_id: str) -> list[dict]:
+async def _dom_fallback(page, catalog_id: str) -> list[dict]:
     print("  [fallback] Scraping DOM...")
+    cards = []
     for sel in (".lot-card", "[class*='lot-card']", "[class*='LotCard']", ".item-card"):
-        cards = page.query_selector_all(sel)
+        cards = await page.query_selector_all(sel)
         if cards:
             break
 
     lots = []
     for card in cards:
-        text = card.inner_text().strip()
+        text = (await card.inner_text()).strip()
         href = None
-        link = card.query_selector("a[href*='/lot/']")
+        link = await card.query_selector("a[href*='/lot/']")
         if link:
-            href = link.get_attribute("href")
+            href = await link.get_attribute("href")
             if href and not href.startswith("http"):
                 href = "https://hibid.com" + href
 
-        img_el = card.query_selector("img")
-        img_url = img_el.get_attribute("src") if img_el else None
+        img_el = await card.query_selector("img")
+        img_url = await img_el.get_attribute("src") if img_el else None
 
         lot_id = None
         if href:
@@ -130,18 +130,15 @@ def _dom_fallback(page, catalog_id: str) -> list[dict]:
     return lots
 
 
-# ── Public entry point ────────────────────────────────────────────────────────
+# ── Async core ────────────────────────────────────────────────────────────────
 
-def scrape_catalog(url: str, headless: bool = True, timeout_ms: int = 30_000) -> list[dict]:
-    url = normalize_url(url)
+async def _scrape_async(url: str, headless: bool, timeout_ms: int) -> list[dict]:
     catalog_id = extract_catalog_id(url)
-    print(f"Scraping HiBid catalog {catalog_id}")
+    api_hits: list[list] = []
 
-    api_hits: list[dict] = []
-
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=headless)
-        ctx = browser.new_context(
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=headless)
+        ctx = await browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -149,9 +146,9 @@ def scrape_catalog(url: str, headless: bool = True, timeout_ms: int = 30_000) ->
             ),
             viewport={"width": 1440, "height": 900},
         )
-        page = ctx.new_page()
+        page = await ctx.new_page()
 
-        def on_response(resp):
+        async def on_response(resp):
             try:
                 if resp.status != 200:
                     return
@@ -159,7 +156,7 @@ def scrape_catalog(url: str, headless: bool = True, timeout_ms: int = 30_000) ->
                     return
                 if not _looks_like_lot_api(resp.url):
                     return
-                data = resp.json()
+                data = await resp.json()
                 lots = _find_lots_in_json(data)
                 if lots:
                     print(f"  [api] {len(lots)} lots ← {resp.url}")
@@ -171,23 +168,23 @@ def scrape_catalog(url: str, headless: bool = True, timeout_ms: int = 30_000) ->
 
         print("  Loading page...")
         try:
-            page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+            await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
         except PWTimeout:
             print("  Load timed out, continuing...")
 
-        page.wait_for_timeout(3000)
+        await page.wait_for_timeout(3000)
 
         print("  Scrolling for lazy-loaded lots...")
         prev_h = 0
         for _ in range(25):
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            page.wait_for_timeout(1200)
-            h = page.evaluate("document.body.scrollHeight")
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await page.wait_for_timeout(1200)
+            h = await page.evaluate("document.body.scrollHeight")
             if h == prev_h:
                 break
             prev_h = h
 
-        page.wait_for_timeout(2000)
+        await page.wait_for_timeout(2000)
 
         if api_hits:
             seen = set()
@@ -200,9 +197,19 @@ def scrape_catalog(url: str, headless: bool = True, timeout_ms: int = 30_000) ->
                         seen.add(uid)
                         lots.append(lot)
         else:
-            lots = _dom_fallback(page, catalog_id)
+            lots = await _dom_fallback(page, catalog_id)
 
-        browser.close()
+        await browser.close()
 
+    return lots
+
+
+# ── Public entry point ────────────────────────────────────────────────────────
+
+def scrape_catalog(url: str, headless: bool = True, timeout_ms: int = 30_000) -> list[dict]:
+    url = normalize_url(url)
+    catalog_id = extract_catalog_id(url)
+    print(f"Scraping HiBid catalog {catalog_id}")
+    lots = asyncio.run(_scrape_async(url, headless, timeout_ms))
     print(f"  {len(lots)} lots collected")
     return lots
